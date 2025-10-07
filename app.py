@@ -72,7 +72,7 @@ try:
     authorize_url = get_config_value('oauth', 'authorize_url', None)
     access_token_url = get_config_value('oauth', 'access_token_url', None)
     scope = get_config_value('oauth', 'scope')
-    jwks_uri = get_config_value('oauth', 'jwks_uri', None)
+    profile_url = get_config_value('oauth', 'profile_url', None)
     
     # Well-known URLs
     jitsi_base = get_config_value('urls', 'jitsi_base')
@@ -91,7 +91,7 @@ try:
     logging.debug(f"authorize_url: {authorize_url}")
     logging.debug(f"access_token_url: {access_token_url}")
     logging.debug(f"scope: {scope}")
-    logging.debug(f"jwks_uri: {jwks_uri}")
+    logging.debug(f"profile_url: {profile_url}")
     logging.debug(f"jitsi_base: {jitsi_base}")
     logging.debug(f"oidc_discovery: {oidc_discovery}")
     logging.debug(f"audience: {audience}")
@@ -115,7 +115,7 @@ def fetch_oidc_configuration():
         json_response = response.json()
         logging.debug("OIDC Configuration successfully fetched.")
         # Check necessary fields in the fetched config
-        if all(k in json_response for k in ['authorization_endpoint', 'token_endpoint', 'jwks_uri']):
+        if all(k in json_response for k in ['authorization_endpoint', 'token_endpoint', 'profile_url']):
             logging.debug("OIDC Configuration fetched: %s", json_response)
             return json_response
         else:
@@ -130,7 +130,7 @@ oidc_config = fetch_oidc_configuration()
 
 # Register the OAuth client using either fetched metadata or static configuration
 try:
-    if oidc_config and all(k in oidc_config for k in ['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'issuer']):
+    if oidc_config and all(k in oidc_config for k in ['authorization_endpoint', 'token_endpoint', 'profile_url', 'issuer']):
         # Determine scope from metadata or fall back to app.conf if not specified
         scope = oidc_config.get('scopes_supported', [scope])
         
@@ -142,8 +142,8 @@ try:
             client_secret=client_secret,
             authorize_url=oidc_config['authorization_endpoint'],
             access_token_url=oidc_config['token_endpoint'],
-            jwks_uri=oidc_config['jwks_uri'],
             client_kwargs={'scope': ' '.join(scope)},
+            userinfo_endpoint=oidc_config['profile_url']
         )
         logging.info("OAuth client registered using dynamic configuration")
     else:
@@ -153,7 +153,7 @@ try:
             'client_secret': client_secret,
             'authorize_url': authorize_url,
             'access_token_url': access_token_url,
-            'jwks_uri': jwks_uri,
+            'profile_url': profile_url,
             'scope': scope,
             'issuer': issuer
         }
@@ -173,7 +173,6 @@ try:
             client_secret=client_secret,
             authorize_url=authorize_url,
             access_token_url=access_token_url,
-            jwks_uri=jwks_uri,
             client_kwargs={'scope': scope},
         )
         logging.info("OAuth client registered using static configuration")
@@ -183,62 +182,6 @@ except KeyError as e:
 except Exception as e:
     logging.error(f"Unexpected error during OAuth registration: {e}")
     raise
-
-def get_jwks_keys(jwks_uri):
-    logging.debug(f"Using JWKS URI: {jwks_uri}")
-    resp = requests.get(jwks_uri)
-    return resp.json()
-
-def jwks_to_pem(key_json):
-    logging.debug("Convert the RSA key from JWK to PEM format.")
-    # Convert the RSA key from JWK to PEM format
-    public_num = rsa.RSAPublicNumbers(
-        e=int(base64.urlsafe_b64decode(key_json['e'] + '==').hex(), 16),
-        n=int(base64.urlsafe_b64decode(key_json['n'] + '==').hex(), 16)
-    )
-    public_key = public_num.public_key(default_backend())
-    pem = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    return pem
-
-def parse_id_token(id_token, jwks_uri):
-    logging.debug("Parsing ID token.")
-    jwks = get_jwks_keys(jwks_uri)
-    header = jwt.get_unverified_header(id_token)
-    rsa_key = {}
-    for key in jwks['keys']:
-        if key['kid'] == header['kid']:
-            rsa_key = jwks_to_pem(key)
-            break
-    if rsa_key:
-        try:
-            # Decode the JWT using the PEM-formatted public key
-            decoded = jwt.decode(
-                id_token,
-                rsa_key,
-                algorithms=['RS256'],
-                audience=oidc_config.get('client_id', config['oauth']['client_id']) if oidc_config else config['oauth']['client_id'],
-                issuer=oidc_config.get('issuer', config['oauth']['issuer']) if oidc_config else config['oauth']['issuer']
-            )
-            logging.info("ID token successfully decoded.")
-            return decoded
-        except jwt.ExpiredSignatureError:
-            logging.error("Token expired.")
-            return None
-        except jwt.InvalidTokenError:
-            logging.error("Invalid token.")
-            return None
-        except PyJWTError as e:  # Catch-all for PyJWT related exceptions
-            logging.error(f"JWT Error: {e}")
-            return None
-        except Exception as e:
-            logging.error(f"Unexpected error decoding token: {e}")
-    else:
-        logging.error("RSA key not found for token decoding.")
-    return None
-
 
 @app.route('/oidc/auth')
 def login():
@@ -280,27 +223,18 @@ def oauth_callback():
             logging.error("Failed to retrieve access token")
             return "Failed to retrieve access token", 500
 
-        if 'id_token' in token_data:
-            # Get the correct jwks_uri from oidc_config if available
-            jwks_uri = oidc_config['jwks_uri'] if oidc_config and 'jwks_uri' in oidc_config else config['oauth']['jwks_uri']
-            logging.debug(f"Using JWKS URI: {jwks_uri}")
-
-            id_token = parse_id_token(token_data['id_token'], jwks_uri)
-            stored_nonce = session.pop('oauth_nonce', None)  # Retrieve and remove nonce from session
-            if not id_token or 'nonce' not in id_token or id_token['nonce'] != stored_nonce:
-                logging.error("Nonce mismatch")
-                return "Nonce mismatch", 400
-        else:
+        if 'id_token' not in token_data:
             logging.error("ID token not found")
             return "ID token not found", 500
 
-        email = id_token.get('email')
-        avatar_url = get_gravatar_url(email) if email else 'http://example.com/default-avatar.png'
+        user_info = oauth.oidc.parse_id_token(token_data['id_token'])
+
+        email = user_info['email']
+        name = user_info['name']
 
         session['user_info'] = {
-            'name': id_token.get('displayName', 'Change me'),
-            'email': id_token.get('email', 'no-email@example.com'),
-            'avatar': avatar_url
+            'name': name,
+            'email': email,
         }
 
         logging.debug(f"User info stored in session: {session['user_info']}")
@@ -308,13 +242,6 @@ def oauth_callback():
     except Exception as e:
         logging.error(f"Error in OIDC redirect function: {e}")
         return "An error occurred during the OIDC redirect process.", 500
-
-def get_gravatar_url(email):
-    if not email:
-        return None
-    email = email.strip().lower()
-    email_hash = hashlib.sha256(email.encode('utf-8')).hexdigest()
-    return f"https://www.gravatar.com/avatar/{email_hash}"
 
 def exchange_code_for_token(code):
     try:
@@ -363,7 +290,6 @@ def tokenize():
     jwt_payload = {
         "context": {
             "user": {
-                "avatar": user_info.get('avatar', 'https://www.gravatar.com/avatar/'),
                 "name": user_info['name'],
                 "email": user_info['email'],
                 "affiliation": "owner",
