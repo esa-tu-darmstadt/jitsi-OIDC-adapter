@@ -142,7 +142,6 @@ try:
             client_secret=client_secret,
             authorize_url=oidc_config['authorization_endpoint'],
             access_token_url=oidc_config['token_endpoint'],
-            client_kwargs={'scope': ' '.join(scope)},
             userinfo_endpoint=oidc_config['profile_url']
         )
         logging.info("OAuth client registered using dynamic configuration")
