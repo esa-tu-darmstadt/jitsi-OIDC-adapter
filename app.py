@@ -299,6 +299,7 @@ def tokenize():
                 "name": user_info['name'],
                 "email": user_info['email'],
                 "affiliation": "owner",
+                "moderator": "true"
             }
         },
         "aud": config['jwt']['audience'],
@@ -307,6 +308,8 @@ def tokenize():
         "room": "*",
         "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
     }
+
+
 
     secret_key = config['jwt']['secret_key']
     encoded_jwt = jwt.encode(jwt_payload, secret_key, algorithm='HS256')
