@@ -208,6 +208,14 @@ def login():
     # Redirect user to the IDP's authorization page
     return redirect(auth_url)
 
+def get_user_info(access_token):
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+    }
+    response = requests.get(profile_url, headers=headers)
+    response.raise_for_status()  # Raises an HTTPError if the request failed
+    return response.json()
+
 @app.route('/oidc/redirect')
 def oauth_callback():
     try:
@@ -221,14 +229,14 @@ def oauth_callback():
             logging.error("Failed to retrieve access token")
             return "Failed to retrieve access token", 500
 
-        if 'id_token' not in token_data:
-            logging.error("ID token not found")
-            return "ID token not found", 500
-
-        user_info = oauth.oidc.parse_id_token(token_data['id_token'])
+        try:
+            user_info = get_user_info(token_data['access_token'])
+        except:
+            logging.error("Failed to retrieve user data")
+            return "Failed to retrieve user data", 500
 
         email = user_info['email']
-        name = user_info['name']
+        name = user_info['full_name']
 
         session['user_info'] = {
             'name': name,
