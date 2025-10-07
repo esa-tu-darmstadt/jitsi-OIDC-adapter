@@ -171,8 +171,7 @@ try:
             client_id=client_id,
             client_secret=client_secret,
             authorize_url=authorize_url,
-            access_token_url=access_token_url,
-            client_kwargs={'scope': scope},
+            access_token_url=access_token_url
         )
         logging.info("OAuth client registered using static configuration")
 except KeyError as e:
